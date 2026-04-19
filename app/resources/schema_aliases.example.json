@@ -1,0 +1,9 @@
+{
+  "aliases": {
+    "buyers": ["customers"],
+    "catalog": ["products"],
+    "line items": ["order_items"],
+    "purchases": ["orders", "order_items"],
+    "sales": ["orders", "order_items"]
+  }
+}
