@@ -21,3 +21,4 @@ htmlcov/
 # IDE
 .idea/
 .vscode/
+/.venv311
