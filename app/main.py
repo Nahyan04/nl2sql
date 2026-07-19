@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
 from app.api.routes import query as query_routes
+from app.api.routes import schema as schema_routes
 from app.config import get_settings
 from app.core.database import get_engine
 from app.core.providers.ollama import OllamaEmbeddingProvider, OllamaTextProvider
@@ -42,6 +43,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="nl2sql", lifespan=lifespan)
 
 app.include_router(query_routes.router, prefix="/api/v1")
+app.include_router(schema_routes.router, prefix="/api/v1")
 
 # TODO: restrict allow_origins in production
 app.add_middleware(
