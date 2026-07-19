@@ -7,6 +7,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
+from app.api.routes import health as health_routes
+from app.api.routes import info as info_routes
 from app.api.routes import query as query_routes
 from app.api.routes import schema as schema_routes
 from app.config import get_settings
@@ -40,10 +42,12 @@ async def lifespan(app: FastAPI):
     engine.dispose()
 
 
-app = FastAPI(title="nl2sql", lifespan=lifespan)
+app = FastAPI(title="nl2sql", version="0.1.0", lifespan=lifespan)
 
 app.include_router(query_routes.router, prefix="/api/v1")
 app.include_router(schema_routes.router, prefix="/api/v1")
+app.include_router(health_routes.router)
+app.include_router(info_routes.router)
 
 # TODO: restrict allow_origins in production
 app.add_middleware(
