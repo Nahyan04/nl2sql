@@ -17,6 +17,7 @@ from app.services.query_pipeline import (
     EMPTY_RESPONSE,
     PARSE_ERROR,
     TIMEOUT,
+    UNSAFE_SQL,
     VALIDATION_ERROR,
     run_pipeline,
 )
@@ -137,6 +138,56 @@ def test_success_includes_selected_tables() -> None:
     assert "orders" in result.result.tables_used
     assert "customers" in result.result.tables_used
     assert result.retry_count == 0
+
+
+def test_retries_and_recovers_from_unsafe_sql() -> None:
+    provider = _ScriptedProvider(
+        [
+            "<sql>SELECT * INTO copy_orders FROM orders</sql>",
+            "<sql>SELECT id FROM orders</sql>",
+        ]
+    )
+    engine = _engine_with_schema()
+
+    result = run_pipeline("orders", engine, provider)
+
+    assert result.success is True
+    assert result.result.query == "SELECT id FROM orders"
+    assert result.retry_count == 1
+    assert "rejected as unsafe" in provider.calls[1][0]
+
+
+def test_returns_unsafe_sql_error_after_exhausting_retries() -> None:
+    provider = _ScriptedProvider(
+        ["<sql>SELECT * INTO copy_orders FROM orders</sql>"] * 3
+    )
+    engine = _engine_with_schema()
+
+    result = run_pipeline("orders", engine, provider, max_retries=3)
+
+    assert result.success is False
+    assert result.error.error == UNSAFE_SQL
+
+
+def test_dry_run_attaches_explain_plan() -> None:
+    provider = _ScriptedProvider(["<sql>SELECT id FROM orders</sql>"])
+    engine = _engine_with_schema()
+
+    result = run_pipeline("orders", engine, provider, dry_run=True)
+
+    assert result.success is True
+    assert result.result.explain_plan
+    assert isinstance(result.result.explain_plan, list)
+
+
+def test_explain_plan_absent_when_dry_run_disabled() -> None:
+    provider = _ScriptedProvider(["<sql>SELECT id FROM orders</sql>"])
+    engine = _engine_with_schema()
+
+    result = run_pipeline("orders", engine, provider)
+
+    assert result.success is True
+    assert result.result.explain_plan is None
 
 
 def test_logs_attempt_details(caplog: pytest.LogCaptureFixture) -> None:

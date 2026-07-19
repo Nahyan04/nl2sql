@@ -6,7 +6,9 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
+from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.prompt_builder import build_system_prompt, build_user_prompt
 from app.core.providers.base import EmbeddingProvider, TextGenerationProvider
@@ -16,6 +18,7 @@ from app.services.retrieval.lexical import retrieve
 from app.services.retrieval.reranker import rerank
 from app.services.schema_introspector import introspect_schema
 from app.services.schema_serializer import serialize_schema
+from app.services.sql_validator import validate_read_only
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +27,7 @@ RAW_LOG_LIMIT = 500
 
 PARSE_ERROR = "PARSE_ERROR"
 VALIDATION_ERROR = "VALIDATION_ERROR"
+UNSAFE_SQL = "UNSAFE_SQL"
 TIMEOUT = "TIMEOUT"
 EMPTY_RESPONSE = "EMPTY_RESPONSE"
 
@@ -52,11 +56,16 @@ def _classify_raw(raw: str) -> str:
     return PARSE_ERROR
 
 
-def _retry_feedback(failure_type: str) -> str:
+def _retry_feedback(failure_type: str, detail: str = "") -> str:
     if failure_type == VALIDATION_ERROR:
         return (
             "Previous attempt produced a non-read-only query. "
             "Generate ONLY a SELECT or WITH query inside <sql>...</sql> tags."
+        )
+    if failure_type == UNSAFE_SQL:
+        return (
+            f"Previous attempt was rejected as unsafe: {detail} "
+            "Generate ONLY a single read-only SELECT or WITH query inside <sql>...</sql> tags."
         )
     if failure_type == EMPTY_RESPONSE:
         return (
@@ -74,6 +83,20 @@ def _retry_feedback(failure_type: str) -> str:
     )
 
 
+def _run_explain(bind: Engine | Connection, sql: str) -> list[str] | None:
+    statement = text(f"EXPLAIN {sql}")
+    try:
+        if isinstance(bind, Connection):
+            result = bind.execute(statement)
+            return [" ".join(str(value) for value in row) for row in result]
+        with bind.connect() as connection:
+            result = connection.execute(statement)
+            return [" ".join(str(value) for value in row) for row in result]
+    except SQLAlchemyError:
+        logger.warning("dry-run EXPLAIN failed", extra={"sql": sql})
+        return None
+
+
 def run_pipeline(
     question: str,
     bind: Engine | Connection,
@@ -86,6 +109,7 @@ def run_pipeline(
     char_budget: int = 4000,
     schema: str | None = None,
     max_retries: int = MAX_RETRIES,
+    dry_run: bool = False,
 ) -> PipelineResult:
     full_schema = introspect_schema(bind, schema=schema)
     selected = retrieve(question, full_schema, aliases=aliases, top_n=top_n_tables)
@@ -125,7 +149,27 @@ def run_pipeline(
 
         parsed = parse_response(raw) if isinstance(raw, str) else None
         if parsed is not None:
-            parsed = parsed.model_copy(update={"tables_used": table_names})
+            validation = validate_read_only(parsed.query)
+            if not validation.is_safe:
+                last_failure_type = UNSAFE_SQL
+                last_detail = validation.reason
+                logger.warning(
+                    "pipeline attempt failed",
+                    extra={
+                        "attempt": attempt,
+                        "failure_type": UNSAFE_SQL,
+                        "selected_tables": table_names,
+                        "raw_response": raw[:RAW_LOG_LIMIT],
+                    },
+                )
+                user_prompt = base_user_prompt + "\n\n" + _retry_feedback(UNSAFE_SQL, validation.reason)
+                continue
+
+            update: dict[str, Any] = {"tables_used": table_names}
+            if dry_run:
+                update["explain_plan"] = _run_explain(bind, parsed.query)
+            parsed = parsed.model_copy(update=update)
+
             logger.info(
                 "pipeline attempt succeeded",
                 extra={

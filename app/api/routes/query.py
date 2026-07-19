@@ -29,6 +29,7 @@ def create_query(body: QueryRequest, request: Request) -> SQLQueryResult | JSONR
         embedding_provider=request.app.state.embedding_provider,
         embedding_enabled=settings.embedding_enabled,
         top_n_tables=body.top_n_tables,
+        dry_run=body.dry_run,
     )
 
     if result.success:

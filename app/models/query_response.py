@@ -17,6 +17,7 @@ class SQLQueryResult(BaseModel):
     tables_used: list[str] = Field(default_factory=list)
     explanation: str = ""
     is_valid: bool = True
+    explain_plan: list[str] | None = None
 
     @field_validator("query")
     @classmethod
