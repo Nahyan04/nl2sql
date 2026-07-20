@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import logging
 import sys
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+import httpx
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.routes import health as health_routes
 from app.api.routes import info as info_routes
@@ -13,7 +18,12 @@ from app.api.routes import query as query_routes
 from app.api.routes import schema as schema_routes
 from app.config import get_settings
 from app.core.database import get_engine
+from app.core.logging import RequestIdMiddleware, configure_logging
 from app.core.providers.ollama import OllamaEmbeddingProvider, OllamaTextProvider
+from app.models.query_response import ErrorResponse
+
+configure_logging()
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -57,3 +67,39 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(RequestIdMiddleware)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    return JSONResponse(
+        status_code=422,
+        content=ErrorResponse(error="VALIDATION_ERROR", detail=str(exc)).model_dump(),
+    )
+
+
+@app.exception_handler(SQLAlchemyError)
+async def database_exception_handler(request: Request, exc: SQLAlchemyError) -> JSONResponse:
+    logger.error("database error", extra={"path": request.url.path}, exc_info=exc)
+    return JSONResponse(
+        status_code=500,
+        content=ErrorResponse(error="DATABASE_ERROR", detail="a database error occurred").model_dump(),
+    )
+
+
+@app.exception_handler(httpx.HTTPError)
+async def provider_exception_handler(request: Request, exc: httpx.HTTPError) -> JSONResponse:
+    logger.error("provider error", extra={"path": request.url.path}, exc_info=exc)
+    return JSONResponse(
+        status_code=502,
+        content=ErrorResponse(error="PROVIDER_ERROR", detail="the LLM provider is unreachable").model_dump(),
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.error("unhandled error", extra={"path": request.url.path}, exc_info=exc)
+    return JSONResponse(
+        status_code=500,
+        content=ErrorResponse(error="INTERNAL_ERROR", detail="an unexpected error occurred").model_dump(),
+    )

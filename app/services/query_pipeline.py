@@ -130,6 +130,10 @@ def run_pipeline(
     last_detail = ""
 
     for attempt in range(1, max_retries + 1):
+        logger.info(
+            "calling text provider",
+            extra={"attempt": attempt, "selected_tables": table_names},
+        )
         try:
             raw = text_provider.generate(user_prompt, system=system_prompt)
         except httpx.TimeoutException as exc:
