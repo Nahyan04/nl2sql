@@ -26,8 +26,8 @@ def client(sqlite_engine, monkeypatch):
     fake_provider = _FakeTextProvider("<sql>SELECT id FROM orders</sql>")
     with (
         patch("app.main.get_engine", return_value=sqlite_engine),
-        patch("app.main.OllamaTextProvider", return_value=fake_provider),
-        patch("app.main.OllamaEmbeddingProvider"),
+        patch("app.main.get_text_provider", return_value=fake_provider),
+        patch("app.main.get_embedding_provider"),
     ):
         with TestClient(main.app) as test_client:
             yield test_client

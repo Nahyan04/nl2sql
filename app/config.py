@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     embedding_provider: str = "ollama"
     embedding_model: str = "nomic-embed-text"
     retrieval_mode: str = "hybrid"
+    schema_alias_path: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -17,9 +17,10 @@ from app.api.routes import info as info_routes
 from app.api.routes import query as query_routes
 from app.api.routes import schema as schema_routes
 from app.config import get_settings
+from app.core.aliases import load_aliases
 from app.core.database import get_engine
 from app.core.logging import RequestIdMiddleware, configure_logging
-from app.core.providers.ollama import OllamaEmbeddingProvider, OllamaTextProvider
+from app.core.providers import get_embedding_provider, get_text_provider
 from app.models.query_response import ErrorResponse
 
 configure_logging()
@@ -40,9 +41,10 @@ async def lifespan(app: FastAPI):
 
     app.state.engine = engine
     app.state.settings = settings
-    app.state.text_provider = OllamaTextProvider(settings.llm_base_url, settings.llm_model)
+    app.state.aliases = load_aliases(settings.schema_alias_path)
+    app.state.text_provider = get_text_provider(settings.llm_provider, settings.llm_base_url, settings.llm_model)
     app.state.embedding_provider = (
-        OllamaEmbeddingProvider(settings.llm_base_url, settings.embedding_model)
+        get_embedding_provider(settings.embedding_provider, settings.llm_base_url, settings.embedding_model)
         if settings.embedding_enabled
         else None
     )

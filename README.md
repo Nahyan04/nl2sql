@@ -1,137 +1,164 @@
 # nl2sql
 
-`nl2sql` is a local-first FastAPI service that turns natural language questions into SQL grounded in a live database schema.
+A FastAPI service that turns a natural language question into a validated, read-only SQL query, checked against a live PostgreSQL schema. I built it to show a complete nl2sql pipeline: schema introspection, retrieval, prompting a local LLM, and SQL validation.
 
-The repo is being built as a POC: practical to demonstrate sound retrieval, prompt, and safety decisions.
+## How it works
 
-## Why This Approach
+1. Introspect the connected Postgres database's schema (tables, columns, foreign keys) at request time.
+2. Score tables against the question using lexical matching (table/column names, plus an optional alias file for domain synonyms like `purchases -> orders`).
+3. Expand the shortlist with foreign-key neighbors so joins are easier for the model to get right.
+4. Optionally rerank the shortlist with embeddings.
+5. Serialize the selected tables into a compact schema description and prompt a local LLM for SQL.
+6. Parse the response, reject anything that isn't a read-only `SELECT`/`WITH` query (via `sqlglot`), and retry up to 3 times on failure.
 
-A lot of NL2SQL demos stop at one of two weak extremes:
+No vector database. The schema is small enough that in-memory lexical scoring plus optional embedding reranking covers it, and it keeps the project simple to clone and run.
 
-- dump the whole schema into the prompt and hope the model figures it out
-- introduce a full vector database before the problem size actually justifies it
+## Tech stack
 
-This project takes a better middle path:
-
-- introspect the schema live
-- build a compact schema catalog
-- shortlist relevant tables with deterministic lexical scoring
-- expand context through foreign-key relationships
-- optionally rerank the shortlist with embeddings
-- pass only the final compressed context to the LLM
-
-That keeps the system explainable, testable, and strong enough to showcase architectural judgment.
-
-## Why No Vector DB in v1
-
-This is a deliberate choice, not a missing feature.
-
-- Most application schemas are small enough that table-level retrieval can stay in memory.
-- The retrieval target is schema metadata, not millions of documents.
-- Optional embedding reranking over a small shortlist gets most of the semantic benefit without extra infrastructure.
-- Avoiding a vector database keeps the repo easier to run, review, and modify after cloning.
-
-If the project later grows, a vector store can be introduced behind the same retriever abstraction.
-
-## Retrieval Strategy
-
-The current architecture direction:
-
-1. Introspect PostgreSQL schema metadata into a normalized catalog.
-2. Build a text descriptor for each table from names, columns, and FK relationships.
-3. Score the schema lexically to get a deterministic shortlist.
-4. Expand the shortlist with direct FK neighbors so joins are easier for the model to infer.
-5. Optionally rerank the shortlist with embeddings cached in memory.
-6. Serialize the selected schema subset into a compact prompt context.
-
-This is intentionally hybrid:
-
-- lexical retrieval gives predictable baseline behavior
-- relationship expansion improves multi-table coverage
-- semantic reranking is optional, not mandatory infrastructure
-
-## Provider Strategy
-
-The runtime is local-first, but not hardwired forever.
-
-- `Ollama` is the default text-generation provider for v1
-- the codebase is being structured around provider interfaces for text generation and embeddings
-- future adapters allow for OpenAI-compatible endpoints, Gemini, or other providers without rewriting the pipeline
-
-That makes the repo useful both as a local demo and as a starting point for people who want to swap in their own model stack.
-
-## Tech Stack
-
-- Python 3.12+
-- FastAPI
-- Pydantic Settings
-- SQLAlchemy
-- PostgreSQL
-- Ollama
+- Python 3.11, FastAPI, Pydantic Settings
+- SQLAlchemy + PostgreSQL
+- Ollama (local LLM, pluggable)
+- `sqlglot` for read-only SQL validation
 - Docker / Docker Compose
-- `httpx`
-- `sqlglot`
-- `pytest`
+- pytest
 
-## Current Status
+## Setup (Docker, recommended)
 
-The implementation is still in progress.
+1. Install [Ollama](https://ollama.com) and pull a model:
+   ```bash
+   ollama pull qwen2.5:7b
+   ```
+   Make sure Ollama is running (`ollama serve`, or just have the Ollama app open). It needs to be reachable from the container.
 
-## Environment Variables
+2. Copy the env file and adjust if needed:
+   ```bash
+   cp .env.example .env
+   ```
+   `LLM_BASE_URL` defaults to `http://host.docker.internal:11434`, which is how the app container reaches Ollama running on your host machine (works on Docker Desktop for Mac/Windows; `docker-compose.yml` also adds the `host-gateway` mapping so it works on Linux).
 
-The current scaffold uses these keys:
+3. Start everything:
+   ```bash
+   docker compose up
+   ```
+   This brings up Postgres and the API (with hot reload) on `http://localhost:8000`.
+
+4. Seed the demo data (see below) and you're ready to query.
+
+## Setup (without Docker)
+
+Requires a Postgres instance already running.
 
 ```bash
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres
-
-LLM_PROVIDER=ollama
-LLM_BASE_URL=http://localhost:11434
-LLM_MODEL=qwen3.5:9b
-
-EMBEDDING_ENABLED=false
-EMBEDDING_PROVIDER=ollama
-EMBEDDING_MODEL=nomic-embed-text
-
-RETRIEVAL_MODE=hybrid
-SCHEMA_ALIAS_PATH=app/resources/schema_aliases.example.json
+pip install -r requirements.txt
+cp .env.example .env   # set DATABASE_URL and LLM_BASE_URL=http://localhost:11434
+python scripts/check_db.py   # verify DB connectivity
+uvicorn app.main:app --reload
 ```
 
-## Project Structure
+## Demo data
+
+`scripts/seed_demo_db.py` creates a small e-commerce schema (`customers`, `products`, `orders`, `order_items`) and seeds it with sample rows.
+
+```bash
+docker compose exec app python scripts/seed_demo_db.py
+```
+
+Then ask it something:
+
+```bash
+curl -s -X POST http://localhost:8000/api/v1/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "Which customers have spent the most money in total?"}'
+```
+
+```json
+{
+  "query": "SELECT c.id, c.name, SUM(oi.quantity * oi.unit_price) AS total_spent\nFROM customers c\nJOIN orders o ON o.customer_id = c.id\nJOIN order_items oi ON oi.order_id = o.id\nGROUP BY c.id, c.name\nORDER BY total_spent DESC",
+  "tables_used": ["customers", "order_items", "orders", "products"],
+  "explanation": "",
+  "is_valid": true,
+  "explain_plan": null
+}
+```
+
+## API
+
+| Endpoint | Description |
+|---|---|
+| `GET /health` | Checks the app can reach the database |
+| `GET /info` | Current provider, model, and retrieval config |
+| `GET /api/v1/schema` | Full introspected schema |
+| `GET /api/v1/schema/{table}` | Schema for a single table |
+| `POST /api/v1/query` | Natural language question -> validated SQL |
+
+`POST /api/v1/query` body:
+
+```json
+{
+  "question": "How many orders are still pending?",
+  "top_n_tables": 8,
+  "dry_run": false
+}
+```
+
+Set `"dry_run": true` to also run `EXPLAIN` on the generated query and return the plan, without executing it:
+
+```bash
+curl -s -X POST http://localhost:8000/api/v1/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What are the top 3 best selling products by quantity sold?", "dry_run": true}'
+```
+
+## Switching to a cloud model provider
+
+The service is provider-pluggable. `app/core/providers/base.py` defines `TextGenerationProvider` and `EmbeddingProvider` interfaces; `app/core/providers/ollama.py` is the only adapter implemented so far. To add a cloud provider (OpenAI-compatible endpoint, Gemini, etc.):
+
+1. Implement `TextGenerationProvider` (and `EmbeddingProvider` if you want reranking) in a new file under `app/core/providers/`.
+2. Register it in `get_text_provider`/`get_embedding_provider` in `app/core/providers/__init__.py`.
+3. Set `LLM_PROVIDER` (and `EMBEDDING_PROVIDER`) in `.env` to your new provider's name.
+
+The pipeline itself never imports a specific provider directly, so this is the only wiring needed.
+
+## Environment variables
+
+See `.env.example` for the full list. The important ones:
+
+- `DATABASE_URL` — Postgres connection string
+- `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_MODEL` — text generation provider
+- `EMBEDDING_ENABLED`, `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL` — optional reranking
+- `SCHEMA_ALIAS_PATH` — path to a JSON file mapping domain terms to table names (see `app/resources/schema_aliases.example.json`)
+
+## Running tests
+
+```bash
+docker compose run --rm -v "$(pwd)/tests:/app/tests" app pytest
+```
+
+Unit tests use in-memory SQLite and mocked providers; integration tests exercise the full pipeline and API layer against a shared SQLite fixture.
+
+## Project structure
 
 ```text
 nl2sql/
 ├── app/
-│   ├── api/
-│   │   └── routes/
-│   ├── core/
-│   │   └── providers/
-│   ├── models/
-│   ├── resources/
+│   ├── api/routes/     — query, schema, health, info endpoints
+│   ├── core/           — db engine, providers, prompt builder, logging, aliases
+│   ├── models/         — Pydantic request/response models
+│   ├── resources/      — schema alias example file
 │   └── services/
-│       └── retrieval/
-├── scripts/
+│       └── retrieval/  — lexical scoring, FK expansion, embedding rerank
+├── scripts/            — DB connectivity check, demo data seeding
 ├── tests/
 │   ├── integration/
 │   └── unit/
 ├── .env.example
-├── PLAN.md
-├── README.md
+├── docker-compose.yml
 └── requirements.txt
 ```
 
-## What This Repo Should Demonstrate
+## Known limitations
 
-- clean FastAPI service structure
-- live schema introspection instead of hardcoded database metadata
-- retrieval decisions that are stronger than naive keyword matching
-- local-first AI integration without framework bloat
-- safety and validation around generated SQL
-
-## Planned Limitations
-
-Even with hybrid retrieval, this stays a POC:
-
-- semantic reranking is optional and limited to schema descriptors
-- generated SQL can still be logically wrong even when syntactically valid
-- no authentication or authorization layer is planned for v1
-- no vector database is included in v1 because the schema search space is intentionally small
+- A local 7-9B model can still produce logically incorrect SQL even when it's syntactically valid.
+- `dry_run` uses `EXPLAIN`, not `EXPLAIN ANALYZE`, so no queries are actually executed.
+- No authentication layer.
+- No vector database. Retrieval is lexical plus optional in-memory embedding reranking, which is enough for a schema this size.
