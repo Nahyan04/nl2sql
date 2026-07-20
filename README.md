@@ -24,9 +24,9 @@ No vector database. The schema is small enough that in-memory lexical scoring pl
 
 ## Setup (Docker, recommended)
 
-1. Install [Ollama](https://ollama.com) and pull a model:
+1. Install [Ollama](https://ollama.com) and pull a model e.g.:
    ```bash
-   ollama pull qwen2.5:7b
+   ollama pull qwen2.5-coder:7b
    ```
    Make sure Ollama is running (`ollama serve`, or just have the Ollama app open). It needs to be reachable from the container.
 
