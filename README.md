@@ -1,6 +1,55 @@
 # nl2sql
 
+[![CI Status](https://github.com/Nahyan04/nl2sql/actions/workflows/ci.yml/badge.svg)](https://github.com/Nahyan04/nl2sql/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688.svg)](https://fastapi.tiangolo.com/)
+
 A FastAPI service that turns a natural language question into a validated, read-only SQL query, checked against a live PostgreSQL schema. I built it to show a complete nl2sql pipeline: schema introspection, retrieval, prompting a local LLM, and SQL validation.
+
+## Architecture
+
+```text
+                         +-------------------------+
+                         |   POST /api/v1/query    |
+                         +------------+------------+
+                                      |
+                                      v
+                         +-------------------------+
+                         |   Schema Introspector   |
+                         +------------+------------+
+                                      |
+                                      v
+       +---------------------------------------------------------------+
+       |                       Retrieval Pipeline                      |
+       |  1. Lexical Scoring (tables, columns, domain aliases)         |
+       |  2. Foreign Key Expansion (1-hop neighbors for join context)  |
+       |  3. Optional Embedding Rerank (in-memory cosine similarity)   |
+       +------------------------------+--------------------------------+
+                                      |
+                                      v
+                         +-------------------------+
+                         |     Prompt Builder      |
+                         +------------+------------+
+                                      |
+                                      v
+                         +-------------------------+
+                         | Pluggable LLM Provider  |
+                         |    (Ollama / Qwen2.5)   |
+                         +------------+------------+
+                                      |
+                                      v
+                         +-------------------------+
+                         |  sqlglot AST Validator  | <---+ (Retry loop if invalid, max 3)
+                         +------------+------------+     |
+                                      |                  |
+                            ( Valid Read-Only SQL )      |
+                                      |                  |
+                                      v                  |
+                         +-------------------------+     |
+                         |  Validated SQL Response |-----+
+                         +-------------------------+
+```
 
 ## How it works
 
@@ -162,3 +211,8 @@ nl2sql/
 - `dry_run` uses `EXPLAIN`, not `EXPLAIN ANALYZE`, so no queries are actually executed.
 - No authentication layer.
 - No vector database. Retrieval is lexical plus optional in-memory embedding reranking, which is enough for a schema this size.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
+
